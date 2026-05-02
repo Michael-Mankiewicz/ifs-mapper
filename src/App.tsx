@@ -773,7 +773,7 @@ function PartCard({
         )}
 
         <FieldRow
-          label="Visual Description"
+          label="Visual description"
           value={part.fields.imagery}
           labelClassName={colors.label}
           fontScale={fontScale}
