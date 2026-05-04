@@ -1,7 +1,21 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import html2canvas from "html2canvas";
+import jsPDF from "jspdf";
 
 type PartType = "Exile" | "Manager" | "Firefighter";
-type FieldKey = "imagery" | "age" | "role" | "body" | "wants" | "fears" ;
+type FieldKey =
+  | "imagery"
+  | "age"
+  | "role"
+  | "body"
+  | "wants"
+  | "fears"
+  | "triggers"
+  | "thoughts"
+  | "feelings"
+  | "sensations"
+  | "strategies"
+  | "needs";
 
 type Part = {
   id: string;
@@ -41,7 +55,13 @@ function createPart(): Part {
       body: "",
       wants: "",
       fears: "",
-    },
+      triggers: "",
+      thoughts: "",
+      feelings: "",
+      sensations: "",
+      strategies: "",
+      needs: "",
+    }
   };
 }
 
@@ -56,6 +76,12 @@ function normalizePart(part: Part): Part {
       body: part.fields?.body ?? "",
       wants: part.fields?.wants ?? "",
       fears: part.fields?.fears ?? "",
+      triggers: part.fields?.triggers ?? "",
+      thoughts: part.fields?.thoughts ?? "",
+      feelings: part.fields?.feelings ?? "",
+      sensations: part.fields?.sensations ?? "",
+      strategies: part.fields?.strategies ?? "",
+      needs: part.fields?.needs ?? "",
     },
   };
 }
@@ -99,6 +125,7 @@ export default function App() {
   const [fontScale, setFontScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [sizes, setSizes] = useState<Record<string, CardSize>>({});
+  const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
 
   const [parts, setParts] = useState<Part[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -150,6 +177,79 @@ useLayoutEffect(() => {
     });
   }
 
+  function focusPart(part: Part) {
+    const targetScale = 1.1;
+    const cardSize = sizes[part.id] ?? { width: 500, height: 400 };
+
+    const screenCenterX = window.innerWidth / 2;
+    const screenCenterY = window.innerHeight / 2;
+
+    const partCenterX = part.x + cardSize.width / 2;
+    const partCenterY = part.y + cardSize.height / 2;
+
+    const startScale = scale;
+    const startPan = pan;
+
+    const targetPan = {
+      x: screenCenterX - partCenterX * targetScale,
+      y: screenCenterY - partCenterY * targetScale,
+    };
+
+    const duration = 450;
+    const startTime = performance.now();
+
+    function easeInOut(t: number) {
+      return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    }
+
+    function animate(now: number) {
+      const progress = Math.min((now - startTime) / duration, 1);
+      const eased = easeInOut(progress);
+
+      setScale(startScale + (targetScale - startScale) * eased);
+
+      setPan({
+        x: startPan.x + (targetPan.x - startPan.x) * eased,
+        y: startPan.y + (targetPan.y - startPan.y) * eased,
+      });
+
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      }
+    }
+
+    setSelectedPartId(part.id);
+    requestAnimationFrame(animate);
+  }
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement;
+
+      if (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "BUTTON"
+      ) {
+        return;
+      }
+
+      if (e.key.toLowerCase() !== "f") return;
+      if (!selectedPartId) return;
+
+      const selectedPart = parts.find((part) => part.id === selectedPartId);
+      if (!selectedPart) return;
+
+      focusPart(selectedPart);
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [selectedPartId, parts, sizes, scale, pan]);
+
   function handleWheel(e: React.WheelEvent<HTMLDivElement>) {
     e.preventDefault();
 
@@ -185,6 +285,7 @@ useLayoutEffect(() => {
     const target = e.target as HTMLElement;
 
     if (target.closest("[data-card]")) return;
+    setSelectedPartId(null);
 
     e.currentTarget.setPointerCapture(e.pointerId);
 
@@ -245,6 +346,34 @@ useLayoutEffect(() => {
     );
   }
 
+  function addProtectorToExile(exileId: string, protectorId: string) {
+    setParts((current) =>
+      current.map((part) =>
+        part.id === protectorId
+          ? {
+              ...part,
+              protectedPartIds: [...part.protectedPartIds, exileId],
+            }
+          : part
+      )
+    );
+  }
+
+  function removeProtectorFromExile(exileId: string, protectorId: string) {
+    setParts((current) =>
+      current.map((part) =>
+        part.id === protectorId
+          ? {
+              ...part,
+              protectedPartIds: part.protectedPartIds.filter(
+                (id) => id !== exileId
+              ),
+            }
+          : part
+      )
+    );
+  }
+
   function updateProtectedParts(id: string, protectedPartIds: string[]) {
     setParts((current) =>
       current.map((part) =>
@@ -270,6 +399,137 @@ useLayoutEffect(() => {
       delete copy[id];
       return copy;
     });
+  }
+
+  async function exportMapPdf() {
+    const mapElement = document.getElementById("map-canvas");
+
+    if (!mapElement || parts.length === 0) return;
+
+    const padding = 120;
+
+    const minX = Math.min(...parts.map((part) => part.x));
+    const minY = Math.min(...parts.map((part) => part.y));
+
+    const maxX = Math.max(
+      ...parts.map((part) => {
+        const size = sizes[part.id] ?? { width: 500, height: 400 };
+        return part.x + size.width;
+      })
+    );
+
+    const maxY = Math.max(
+      ...parts.map((part) => {
+        const size = sizes[part.id] ?? { width: 500, height: 400 };
+        return part.y + size.height;
+      })
+    );
+
+    const exportWidth = Math.ceil(maxX - minX + padding * 2);
+    const exportHeight = Math.ceil(maxY - minY + padding * 2);
+
+    const exportRoot = document.createElement("div");
+    exportRoot.style.position = "fixed";
+    exportRoot.style.left = "0";
+    exportRoot.style.top = "0";
+    exportRoot.style.width = `${exportWidth}px`;
+    exportRoot.style.height = `${exportHeight}px`;
+    exportRoot.style.overflow = "hidden";
+    exportRoot.style.background = "#0b1220";
+    exportRoot.style.zIndex = "-9999";
+    exportRoot.style.pointerEvents = "none";
+
+    const clone = mapElement.cloneNode(true) as HTMLElement;
+
+    clone.style.position = "absolute";
+    clone.style.left = "0";
+    clone.style.top = "0";
+    clone.style.width = `${exportWidth}px`;
+    clone.style.height = `${exportHeight}px`;
+    clone.style.transformOrigin = "top left";
+
+    clone.style.transform = `translate(${-minX + padding}px, ${
+      -minY + padding
+    }px) scale(1)`;
+
+    exportRoot.id = "pdf-export-root";
+
+    exportRoot.appendChild(clone);
+    document.body.appendChild(exportRoot);
+
+    const exportStyle = document.createElement("style");
+    exportStyle.textContent = `
+      #pdf-export-root,
+      #pdf-export-root * {
+        box-shadow: none !important;
+        outline-color: transparent !important;
+        text-decoration-color: transparent !important;
+        --tw-ring-color: transparent !important;
+        --tw-shadow: 0 0 #0000 !important;
+        --tw-shadow-colored: 0 0 #0000 !important;
+      }
+    `;
+    exportRoot.appendChild(exportStyle);
+
+    [exportRoot, clone, ...Array.from(clone.querySelectorAll<HTMLElement>("*"))].forEach(
+      (el) => {
+        const computed = window.getComputedStyle(el);
+
+        for (const property of Array.from(computed)) {
+          const value = computed.getPropertyValue(property);
+
+          if (!value.includes("oklch") && !value.includes("oklab")) continue;
+
+          if (property.includes("color")) {
+            el.style.setProperty(property, "#e2e8f0", "important");
+          } else if (property.includes("background")) {
+            el.style.setProperty(property, "transparent", "important");
+          } else if (property.includes("border")) {
+            el.style.setProperty(
+              property,
+              "rgba(148, 163, 184, 0.3)",
+              "important"
+            );
+          } else if (property.includes("shadow")) {
+            el.style.setProperty(property, "none", "important");
+          } else {
+            el.style.setProperty(property, "initial", "important");
+          }
+        }
+      }
+    );
+
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    try {
+      const canvas = await html2canvas(exportRoot, {
+        backgroundColor: "#0b1220",
+        width: exportWidth,
+        height: exportHeight,
+        windowWidth: exportWidth,
+        windowHeight: exportHeight,
+        scale: 2,
+        useCORS: true,
+        logging: true,
+      });
+
+      const imageData = canvas.toDataURL("image/png");
+
+      const pdf = new jsPDF({
+        orientation: exportWidth > exportHeight ? "landscape" : "portrait",
+        unit: "px",
+        format: [exportWidth, exportHeight],
+      });
+
+      pdf.addImage(imageData, "PNG", 0, 0, exportWidth, exportHeight);
+      pdf.save("ifs-map.pdf");
+    } catch (error) {
+      console.error("PDF export failed:", error);
+      alert("PDF export failed. Check the browser console for the error.");
+    } finally {
+      exportRoot.remove();
+    }
   }
 
   function exportJson() {
@@ -340,6 +600,8 @@ useLayoutEffect(() => {
         <div className="rounded-lg bg-[#17233a] px-3 py-2 text-sm">
           Zoom: {Math.round(scale * 100)}%
         </div>
+
+        
         
       </div>
 
@@ -351,12 +613,17 @@ useLayoutEffect(() => {
         className="relative h-screen w-screen overflow-hidden cursor-move"
       >
         <div
+          id="map-canvas"
           className="relative h-full w-full origin-top-left"
           style={{
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
           }}
         >
-          <ProtectionArrowLayer parts={parts} sizes={sizes} />
+          <ProtectionArrowLayer
+            parts={parts}
+            sizes={sizes}
+            selectedPartId={selectedPartId}
+          />
 
           {parts.map((part) => (
             <DraggableCard
@@ -365,6 +632,7 @@ useLayoutEffect(() => {
               y={part.y}
               scale={scale}
               onMove={(x, y) => updatePart(part.id, { x, y })}
+              onDoubleClick={() => focusPart(part)}
             >
               <PartCard
                 part={part}
@@ -377,13 +645,29 @@ useLayoutEffect(() => {
                 onUpdateProtectedParts={(protectedPartIds) =>
                   updateProtectedParts(part.id, protectedPartIds)
                 }
+                onAddProtector={(protectorId) => addProtectorToExile(part.id, protectorId)}
+                onRemoveProtector={(protectorId) =>
+                  removeProtectorFromExile(part.id, protectorId)
+                }
                 onRemove={() => removePart(part.id)}
                 fontScale={fontScale}
+                onSelect={() => setSelectedPartId(part.id)}
+                isSelected={selectedPartId === part.id}
               />
             </DraggableCard>
           ))}
         </div>
       </div>
+
+      <SidePanel
+        part={parts.find((part) => part.id === selectedPartId) ?? null}
+        onChange={(key, value) => {
+          if (!selectedPartId) return;
+          updatePartField(selectedPartId, key, value);
+        }}
+        onClose={() => setSelectedPartId(null)}
+      />
+
       <div className="fixed bottom-3 left-4 z-50 rounded-md bg-black/30 px-2 py-1 text-xs text-slate-300 backdrop-blur">
         v1.0
       </div>
@@ -395,9 +679,11 @@ useLayoutEffect(() => {
 function ProtectionArrowLayer({
   parts,
   sizes,
+  selectedPartId,
 }: {
   parts: Part[];
   sizes: Record<string, CardSize>;
+  selectedPartId: string | null;
 }) {
   function getCenter(id: string) {
     const part = parts.find((p) => p.id === id);
@@ -519,13 +805,22 @@ function ProtectionArrowLayer({
 
           const colors = getPartColors(part.partType);
 
+          const isConnectedToSelected =
+          selectedPartId === null ||
+          selectedPartId === part.id ||
+          selectedPartId === protectedId;
+
+        const opacity = isConnectedToSelected ? 1 : 0.12;
+        const strokeWidth = isConnectedToSelected ? 4 : 2;
+
           return (
             <path
               key={`${part.id}-${protectedId}`}
               d={`M ${from.x} ${from.y} Q ${controlX} ${controlY} ${to.x} ${to.y}`}
               fill="none"
               stroke={colors.arrow}
-              strokeWidth="3"
+              strokeWidth={strokeWidth}
+              opacity={opacity}
               markerEnd={`url(#protected-arrow-${part.partType})`}
             />
           );
@@ -540,12 +835,14 @@ function DraggableCard({
   y,
   scale,
   onMove,
+  onDoubleClick,
   children,
 }: {
   x: number;
   y: number;
   scale: number;
   onMove: (x: number, y: number) => void;
+  onDoubleClick?: () => void;
   children: React.ReactNode;
 }) {
   const dragStart = useRef<{
@@ -596,6 +893,10 @@ function DraggableCard({
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        onDoubleClick?.();
+      }}
       className="absolute cursor-grab active:cursor-grabbing"
       style={{ left: x, top: y }}
     >
@@ -682,6 +983,10 @@ function PartCard({
   onUpdateProtectedParts,
   onRemove,
   fontScale,
+  onSelect,
+  isSelected,
+  onAddProtector,
+  onRemoveProtector,
 }: {
   part: Part;
   allParts: Part[];
@@ -691,6 +996,10 @@ function PartCard({
   onUpdateProtectedParts: (protectedPartIds: string[]) => void;
   onRemove: () => void;
   fontScale: number;
+  onSelect: () => void;
+  isSelected: boolean;
+  onAddProtector: (protectorId: string) => void;
+  onRemoveProtector: (protectorId: string) => void;
 }) {
   const ref = useRef<HTMLElement | null>(null);
   const colors = getPartColors(part.partType);
@@ -725,7 +1034,10 @@ function PartCard({
   return (
     <section
       ref={ref}
-      className={`w-[500px] rounded-2xl ${colors.outer} p-4 shadow-xl`}
+      onPointerDown={onSelect}
+      className={`w-[500px] rounded-2xl p-4 shadow-xl ${
+        colors.outer
+      } ${isSelected ? "ring-2 ring-white" : ""}`}
     >
       <div className={`overflow-hidden rounded-xl ${colors.inner}`}>
         <div className="relative  py-3">
@@ -762,7 +1074,16 @@ function PartCard({
           </div>
         </div>
 
-        {part.partType !== "Exile" && (
+        {part.partType === "Exile" ? (
+          <ProtectedBySelector
+            exile={part}
+            allParts={allParts}
+            chipClassName={colors.chip}
+            fontScale={fontScale}
+            onAddProtector={onAddProtector}
+            onRemoveProtector={onRemoveProtector}
+          />
+        ) : (
           <ProtectedPartsSelector
             part={part}
             allParts={allParts}
@@ -822,6 +1143,232 @@ function PartCard({
     </section>
   );
 }
+
+function SidePanel({
+  part,
+  onChange,
+  onClose,
+}: {
+  part: Part | null;
+  onChange: (key: FieldKey, value: string) => void;
+  onClose: () => void;
+}) {
+  const isOpen = part !== null;
+
+  return (
+    <aside
+      className={`fixed right-0 top-0 z-50 h-screen w-[380px] bg-[#111827] shadow-2xl transition-transform duration-300 ease-out ${
+        isOpen ? "translate-x-0" : "translate-x-full"
+      }`}
+    >
+      {part && (
+        <>
+          <div className="flex items-center justify-between border-b border-slate-700 p-4">
+            <div>
+              <div className="text-lg font-semibold text-slate-100">
+                {part.title || "Untitled"}
+              </div>
+              <div className="text-xs text-slate-400">{part.partType}</div>
+            </div>
+
+            <button
+              onClick={onClose}
+              className="rounded-md bg-white/10 px-2 py-1 text-sm text-slate-300 hover:bg-white/20"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="h-[calc(100vh-72px)] space-y-4 overflow-y-auto p-4">
+            <PanelField
+              label="Trigger cues"
+              value={part.fields.triggers}
+              onChange={(v) => onChange("triggers", v)}
+            />
+
+            <PanelField
+              label="Thoughts it says"
+              value={part.fields.thoughts}
+              onChange={(v) => onChange("thoughts", v)}
+            />
+
+            <PanelField
+              label="Feelings it carries"
+              value={part.fields.feelings}
+              onChange={(v) => onChange("feelings", v)}
+            />
+
+            <PanelField
+              label="Body sensations"
+              value={part.fields.sensations}
+              onChange={(v) => onChange("sensations", v)}
+            />
+
+            <PanelField
+              label="Strategies it uses"
+              value={part.fields.strategies}
+              onChange={(v) => onChange("strategies", v)}
+            />
+
+            <PanelField
+              label="What it needs from me"
+              value={part.fields.needs}
+              onChange={(v) => onChange("needs", v)}
+            />
+          </div>
+        </>
+      )}
+    </aside>
+  );
+}
+
+function PanelField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
+
+  return (
+    <label className="block">
+      <div className="mb-1 text-xs font-medium text-slate-400">{label}</div>
+
+      <textarea
+        ref={ref}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="min-h-[90px] w-full resize-none overflow-hidden rounded-lg bg-[#1f2937] p-3 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-cyan-400"
+      />
+    </label>
+  );
+}
+
+function ProtectedBySelector({
+    exile,
+    allParts,
+    chipClassName,
+    onAddProtector,
+    onRemoveProtector,
+    fontScale,
+  }: {
+    exile: Part;
+    allParts: Part[];
+    chipClassName: string;
+    onAddProtector: (protectorId: string) => void;
+    onRemoveProtector: (protectorId: string) => void;
+    fontScale: number;
+  }) {
+    const [open, setOpen] = useState(false);
+    const containerRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+      function handleClickOutside(e: MouseEvent) {
+        if (!containerRef.current) return;
+
+        if (!containerRef.current.contains(e.target as Node)) {
+          setOpen(false);
+        }
+      }
+
+      document.addEventListener("mousedown", handleClickOutside);
+
+      return () => {
+        document.removeEventListener("mousedown", handleClickOutside);
+      };
+    }, []);
+
+    const possibleProtectors = allParts.filter(
+      (p) => p.id !== exile.id && p.partType !== "Exile"
+    );
+
+    const protectors = possibleProtectors.filter((p) =>
+      p.protectedPartIds.includes(exile.id)
+    );
+
+    const unselectedProtectors = possibleProtectors.filter(
+      (p) => !p.protectedPartIds.includes(exile.id)
+    );
+
+    return (
+      <div className="border-t border-slate-500/30 px-3 py-2">
+        <div
+          className="mb-1 text-slate-400"
+          style={{ fontSize: `${0.875 * fontScale}rem` }}
+        >
+          Protected by:
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {protectors.map((protector) => (
+            <button
+              key={protector.id}
+              type="button"
+              onClick={() => onRemoveProtector(protector.id)}
+              className={`rounded-full px-2 py-0.5 ${chipClassName}`}
+              style={{ fontSize: `${0.75 * fontScale}rem` }}
+              title="Click to remove"
+            >
+              {protector.title || "Untitled"} ×
+            </button>
+          ))}
+
+          <div ref={containerRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setOpen((current) => !current)}
+              className="rounded-full bg-black/20 px-2 py-0.5 text-slate-300 hover:bg-black/30"
+              style={{ fontSize: `${0.75 * fontScale}rem` }}
+            >
+              + Add
+            </button>
+
+            {open && (
+              <div
+                onWheel={(e) => e.stopPropagation()}
+                className="absolute left-0 top-full z-50 mt-1 max-h-48 w-48 overflow-y-auto rounded-md bg-[#0b1220] p-1 shadow-lg"
+              >
+                {unselectedProtectors.length === 0 ? (
+                  <div
+                    className="px-3 py-2 text-slate-500"
+                    style={{ fontSize: `${0.75 * fontScale}rem` }}
+                  >
+                    No available protectors
+                  </div>
+                ) : (
+                  unselectedProtectors.map((protector) => (
+                    <button
+                      key={protector.id}
+                      type="button"
+                      onClick={() => {
+                        onAddProtector(protector.id);
+                        setOpen(false);
+                      }}
+                      className="block w-full rounded px-3 py-2 text-left text-slate-200 hover:bg-white/10"
+                      style={{ fontSize: `${0.75 * fontScale}rem` }}
+                    >
+                      {protector.title || "Untitled"}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
 function ProtectedPartsSelector({
   part,
