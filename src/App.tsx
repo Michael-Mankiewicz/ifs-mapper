@@ -125,7 +125,7 @@ export default function App() {
   const [sizes, setSizes] = useState<Record<string, CardSize>>({});
   const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
 
-  const [parts, setParts] = useState<Part[]>(() => {
+  function loadInitialParts() {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return [createPart()];
 
@@ -135,7 +135,26 @@ export default function App() {
     } catch {
       return [createPart()];
     }
-  });
+  }
+
+  const [history, setHistory] = useState<{
+    past: Part[][];
+    present: Part[];
+    future: Part[][];
+  }>(() => ({
+    past: [],
+    present: loadInitialParts(),
+    future: [],
+  }));
+
+  const parts = history.present;
+
+  const [linkDrag, setLinkDrag] = useState<{
+    fromPartId: string;
+    x: number;
+    y: number;
+    hoverPartId: string | null;
+  } | null>(null);
 
   useLayoutEffect(() => {
     localStorage.setItem(
@@ -175,11 +194,192 @@ useLayoutEffect(() => {
     });
   }
 
+useEffect(() => {
+  function handleKeyDown(e: KeyboardEvent) {
+    const isMac = navigator.platform.toUpperCase().includes("MAC");
+    const ctrlOrCmd = isMac ? e.metaKey : e.ctrlKey;
+
+    if (!ctrlOrCmd) return;
+
+    const active = document.activeElement;
+    if (
+      active &&
+      (active.tagName === "INPUT" || active.tagName === "TEXTAREA")
+    ) {
+      return;
+    }
+
+    const key = e.key.toLowerCase();
+
+    // Undo
+    if (key === "z" && !e.shiftKey) {
+      e.preventDefault();
+      undo();
+    }
+
+    // Redo (Ctrl+Y OR Ctrl+Shift+Z)
+    if (key === "y" || (key === "z" && e.shiftKey)) {
+      e.preventDefault();
+      redo();
+    }
+  }
+
+  window.addEventListener("keydown", handleKeyDown);
+  return () => window.removeEventListener("keydown", handleKeyDown);
+}, [undo, redo]);
+
+  function commitParts(updater: (current: Part[]) => Part[]) {
+    setHistory((history) => {
+      const next = updater(history.present);
+
+      if (JSON.stringify(next) === JSON.stringify(history.present)) {
+        return history;
+      }
+
+      return {
+        past: [...history.past, history.present].slice(-100),
+        present: next,
+        future: [],
+      };
+    });
+  }
+
+  function setPartsLive(updater: (current: Part[]) => Part[]) {
+    setHistory((history) => ({
+      ...history,
+      present: updater(history.present),
+    }));
+  }
+
+  function undo() {
+    setHistory((history) => {
+      const previous = history.past.at(-1);
+      if (!previous) return history;
+
+      return {
+        past: history.past.slice(0, -1),
+        present: previous,
+        future: [history.present, ...history.future],
+      };
+    });
+  }
+
+  function redo() {
+    setHistory((history) => {
+      const next = history.future[0];
+      if (!next) return history;
+
+      return {
+        past: [...history.past, history.present],
+        present: next,
+        future: history.future.slice(1),
+      };
+    });
+  }
+
+  function focusPartNetwork(part: Part) {
+    const connectedIds = new Set<string>();
+
+    connectedIds.add(part.id);
+
+    // parts this part protects
+    part.protectedPartIds.forEach((id) => connectedIds.add(id));
+
+    // parts protecting this part
+    parts.forEach((otherPart) => {
+      if (otherPart.protectedPartIds.includes(part.id)) {
+        connectedIds.add(otherPart.id);
+      }
+    });
+
+    const connectedParts = parts.filter((p) => connectedIds.has(p.id));
+
+    if (connectedParts.length === 0) return;
+
+    const padding = 220;
+
+    const minX = Math.min(...connectedParts.map((p) => p.x));
+    const minY = Math.min(...connectedParts.map((p) => p.y));
+
+    const maxX = Math.max(
+      ...connectedParts.map((p) => {
+        const size = sizes[p.id] ?? { width: 500, height: 400 };
+        return p.x + size.width;
+      })
+    );
+
+    const maxY = Math.max(
+      ...connectedParts.map((p) => {
+        const size = sizes[p.id] ?? { width: 500, height: 400 };
+        return p.y + size.height;
+      })
+    );
+
+    const networkWidth = maxX - minX + padding * 2;
+    const networkHeight = maxY - minY + padding * 2;
+
+    const sidePanelWidth = selectedPartId ? 380 : 0;
+    const availableWidth = window.innerWidth - sidePanelWidth;
+    const availableHeight = window.innerHeight;
+
+    const targetScale = Math.min(
+      availableWidth / networkWidth,
+      availableHeight / networkHeight,
+      1.1
+    );
+
+    const clampedScale = Math.max(0.2, targetScale);
+
+    const networkCenterX = (minX + maxX) / 2;
+    const networkCenterY = (minY + maxY) / 2;
+
+    const targetPan = {
+      x: availableWidth / 2 - networkCenterX * clampedScale,
+      y: availableHeight / 2 - networkCenterY * clampedScale,
+    };
+
+    animateViewport(clampedScale, targetPan);
+    setSelectedPartId(part.id);
+  }
+
+  function animateViewport(targetScale: number, targetPan: { x: number; y: number }) {
+    const startScale = scale;
+    const startPan = pan;
+
+    const duration = 450;
+    const startTime = performance.now();
+
+    function easeInOut(t: number) {
+      return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    }
+
+    function animate(now: number) {
+      const progress = Math.min((now - startTime) / duration, 1);
+      const eased = easeInOut(progress);
+
+      setScale(startScale + (targetScale - startScale) * eased);
+
+      setPan({
+        x: startPan.x + (targetPan.x - startPan.x) * eased,
+        y: startPan.y + (targetPan.y - startPan.y) * eased,
+      });
+
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      }
+    }
+
+    requestAnimationFrame(animate);
+  }
+
   function focusPart(part: Part) {
     const targetScale = 1.1;
     const cardSize = sizes[part.id] ?? { width: 500, height: 400 };
 
-    const screenCenterX = window.innerWidth / 2;
+    const sidePanelWidth = selectedPartId ? 380 : 0;
+    const availableWidth = window.innerWidth - sidePanelWidth;
+
+    const screenCenterX = availableWidth / 2;
     const screenCenterY = window.innerHeight / 2;
 
     const partCenterX = part.x + cardSize.width / 2;
@@ -238,7 +438,11 @@ useLayoutEffect(() => {
       const selectedPart = parts.find((part) => part.id === selectedPartId);
       if (!selectedPart) return;
 
-      focusPart(selectedPart);
+      if (e.shiftKey) {
+        focusPartNetwork(selectedPart);
+      } else {
+        focusPart(selectedPart);
+      }
     }
 
     window.addEventListener("keydown", handleKeyDown);
@@ -253,7 +457,7 @@ useLayoutEffect(() => {
 
     const zoomSpeed = 0.0015;
     const nextScale = Math.min(
-      Math.max(scale * (1 - e.deltaY * zoomSpeed), 0.35),
+      Math.max(scale * (1 - e.deltaY * zoomSpeed), 0.1),
       2.5
     );
 
@@ -312,7 +516,7 @@ useLayoutEffect(() => {
   }
 
   function addPart() {
-    setParts((current) => [
+    commitParts((current) => [
       ...current,
       {
         ...createPart(),
@@ -322,14 +526,113 @@ useLayoutEffect(() => {
     ]);
   }
 
+
+  function startLinkDrag(partId: string, e: React.PointerEvent) {
+    if (!e.shiftKey) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+
+    setLinkDrag({
+      fromPartId: partId,
+      x: (e.clientX - pan.x) / scale,
+      y: (e.clientY - pan.y) / scale,
+      hoverPartId: null,
+    });
+  }
+
+  function moveLinkDrag(e: React.PointerEvent<HTMLDivElement>) {
+    if (!linkDrag) return;
+
+    const elementUnderMouse = document.elementFromPoint(
+      e.clientX,
+      e.clientY
+    ) as HTMLElement | null;
+
+    const cardEl = elementUnderMouse?.closest(
+      "[data-part-id]"
+    ) as HTMLElement | null;
+    const hoverPartId = cardEl?.dataset.partId ?? null;
+
+    const hoverPart =
+      hoverPartId ? parts.find((p) => p.id === hoverPartId) : null;
+
+    const fromPart = parts.find((p) => p.id === linkDrag.fromPartId);
+
+    const isValidHover =
+      hoverPart &&
+      fromPart &&
+      hoverPart.id !== fromPart.id &&
+      !(fromPart.partType === "Exile" && hoverPart.partType === "Exile");
+
+    setLinkDrag((current) =>
+      current
+        ? {
+            ...current,
+            x: (e.clientX - pan.x) / scale,
+            y: (e.clientY - pan.y) / scale,
+            hoverPartId: isValidHover ? hoverPart.id : null,
+          }
+        : null
+    );
+  }
+
+  function finishLinkDrag(e: React.PointerEvent<HTMLDivElement>) {
+    if (!linkDrag) return;
+
+    const elementUnderMouse = document.elementFromPoint(
+      e.clientX,
+      e.clientY
+    ) as HTMLElement | null;
+
+    const cardEl = elementUnderMouse?.closest(
+      "[data-part-id]"
+    ) as HTMLElement | null;
+
+    const targetPartId = cardEl?.dataset.partId;
+
+    if (targetPartId && targetPartId !== linkDrag.fromPartId) {
+      const fromPart = parts.find((p) => p.id === linkDrag.fromPartId);
+      const targetPart = parts.find((p) => p.id === targetPartId);
+
+      if (fromPart && targetPart) {
+        if (fromPart.partType === "Exile") {
+          // Dragging FROM exile TO manager/firefighter:
+          // target protects exile
+          if (targetPart.partType !== "Exile") {
+            if (!targetPart.protectedPartIds.includes(fromPart.id)) {
+              updateProtectedParts(targetPart.id, [
+                ...targetPart.protectedPartIds,
+                fromPart.id,
+              ]);
+            }
+          }
+        } else {
+          // Dragging FROM manager/firefighter TO anything:
+          // source protects target
+          if (!fromPart.protectedPartIds.includes(targetPart.id)) {
+            updateProtectedParts(fromPart.id, [
+              ...fromPart.protectedPartIds,
+              targetPart.id,
+            ]);
+          }
+        }
+      }
+    }
+
+    setLinkDrag(null);
+  }
+
   function updatePart(id: string, updates: Partial<Part>) {
-    setParts((current) =>
+    commitParts((current) =>
       current.map((part) => (part.id === id ? { ...part, ...updates } : part))
     );
   }
 
   function updatePartField(id: string, key: FieldKey, value: string) {
-    setParts((current) =>
+    commitParts((current) =>
       current.map((part) =>
         part.id === id
           ? {
@@ -345,7 +648,7 @@ useLayoutEffect(() => {
   }
 
   function addProtectorToExile(exileId: string, protectorId: string) {
-    setParts((current) =>
+    commitParts((current) =>
       current.map((part) =>
         part.id === protectorId
           ? {
@@ -358,7 +661,7 @@ useLayoutEffect(() => {
   }
 
   function removeProtectorFromExile(exileId: string, protectorId: string) {
-    setParts((current) =>
+    commitParts((current) =>
       current.map((part) =>
         part.id === protectorId
           ? {
@@ -373,7 +676,7 @@ useLayoutEffect(() => {
   }
 
   function updateProtectedParts(id: string, protectedPartIds: string[]) {
-    setParts((current) =>
+    commitParts((current) =>
       current.map((part) =>
         part.id === id ? { ...part, protectedPartIds } : part
       )
@@ -381,7 +684,7 @@ useLayoutEffect(() => {
   }
 
   function removePart(id: string) {
-    setParts((current) =>
+    commitParts((current) =>
       current
         .filter((part) => part.id !== id)
         .map((part) => ({
@@ -468,15 +771,40 @@ useLayoutEffect(() => {
           Zoom: {Math.round(scale * 100)}%
         </div>
 
-        
-        
+        <button
+          onClick={undo}
+          disabled={history.past.length === 0}
+          className="rounded-lg bg-[#17233a] px-3 py-2 text-sm disabled:opacity-40"
+        >
+          Undo
+        </button>
+
+        <button
+          onClick={redo}
+          disabled={history.future.length === 0}
+          className="rounded-lg bg-[#17233a] px-3 py-2 text-sm disabled:opacity-40"
+        >
+          Redo
+        </button>
       </div>
 
       <div
         onWheel={handleWheel}
         onPointerDown={handleBackgroundPointerDown}
-        onPointerMove={handleBackgroundPointerMove}
-        onPointerUp={handleBackgroundPointerUp}
+        onPointerMove={(e) => {
+          if (linkDrag) {
+            moveLinkDrag(e);
+          } else {
+            handleBackgroundPointerMove(e);
+          }
+        }}
+        onPointerUp={(e) => {
+          if (linkDrag) {
+            finishLinkDrag(e);
+          } else {
+            handleBackgroundPointerUp(e);
+          }
+        }}
         className="relative h-screen w-screen overflow-hidden cursor-move"
       >
         <div
@@ -490,6 +818,7 @@ useLayoutEffect(() => {
             parts={parts}
             sizes={sizes}
             selectedPartId={selectedPartId}
+            linkDrag={linkDrag}
           />
 
           {parts.map((part) => (
@@ -498,29 +827,42 @@ useLayoutEffect(() => {
               x={part.x}
               y={part.y}
               scale={scale}
-              onMove={(x, y) => updatePart(part.id, { x, y })}
+              onMove={(x, y) =>
+                setPartsLive((current) =>
+                  current.map((p) =>
+                    p.id === part.id ? { ...p, x, y } : p
+                  )
+                )
+              }
               onDoubleClick={() => focusPart(part)}
             >
-              <PartCard
-                part={part}
-                allParts={parts}
-                onMeasure={(size) => updateSize(part.id, size)}
-                onUpdate={(updates) => updatePart(part.id, updates)}
-                onUpdateField={(key, value) =>
-                  updatePartField(part.id, key, value)
-                }
-                onUpdateProtectedParts={(protectedPartIds) =>
-                  updateProtectedParts(part.id, protectedPartIds)
-                }
-                onAddProtector={(protectorId) => addProtectorToExile(part.id, protectorId)}
-                onRemoveProtector={(protectorId) =>
-                  removeProtectorFromExile(part.id, protectorId)
-                }
-                onRemove={() => removePart(part.id)}
-                fontScale={fontScale}
-                onSelect={() => setSelectedPartId(part.id)}
-                isSelected={selectedPartId === part.id}
-              />
+              <div
+                data-part-id={part.id}
+                onPointerDown={(e) => startLinkDrag(part.id, e)}
+              >
+                <PartCard
+                  part={part}
+                  allParts={parts}
+                  onMeasure={(size) => updateSize(part.id, size)}
+                  onUpdate={(updates) => updatePart(part.id, updates)}
+                  onUpdateField={(key, value) =>
+                    updatePartField(part.id, key, value)
+                  }
+                  onUpdateProtectedParts={(protectedPartIds) =>
+                    updateProtectedParts(part.id, protectedPartIds)
+                  }
+                  onAddProtector={(protectorId) => addProtectorToExile(part.id, protectorId)}
+                  onRemoveProtector={(protectorId) =>
+                    removeProtectorFromExile(part.id, protectorId)
+                  }
+                  onRemove={() => removePart(part.id)}
+                  fontScale={fontScale}
+                  onSelect={() => setSelectedPartId(part.id)}
+                  isSelected={selectedPartId === part.id}
+                  isLinkHoverTarget={linkDrag?.hoverPartId === part.id}
+                  onFocusPart={focusPart}
+                />
+              </div>
             </DraggableCard>
           ))}
         </div>
@@ -536,7 +878,7 @@ useLayoutEffect(() => {
       />
 
       <div className="fixed bottom-3 left-4 z-50 rounded-md bg-black/30 px-2 py-1 text-xs text-slate-300 backdrop-blur">
-        v1.0
+        v1.1
       </div>
     </main>
     
@@ -547,10 +889,17 @@ function ProtectionArrowLayer({
   parts,
   sizes,
   selectedPartId,
+  linkDrag,
 }: {
   parts: Part[];
   sizes: Record<string, CardSize>;
   selectedPartId: string | null;
+  linkDrag: {
+    fromPartId: string;
+    x: number;
+    y: number;
+    hoverPartId: string | null;
+  } | null;
 }) {
   function getCenter(id: string) {
     const part = parts.find((p) => p.id === id);
@@ -611,14 +960,14 @@ function ProtectionArrowLayer({
             <marker
               key={type}
               id={`protected-arrow-${type}`}
-              markerWidth="12"
-              markerHeight="12"
-              refX="10"
-              refY="6"
+              markerWidth="40"
+              markerHeight="40"
+              refX="34"
+              refY="20"
               orient="auto"
-              markerUnits="strokeWidth"
+              markerUnits="userSpaceOnUse"
             >
-              <path d="M0,0 L0,12 L12,6 z" fill={colors.arrow} />
+              <path d="M0,0 L0,40 L40,20 z" fill={colors.arrow} />
             </marker>
           );
         })}
@@ -693,6 +1042,107 @@ function ProtectionArrowLayer({
           );
         })
       )}
+      {linkDrag && (() => {
+        const fromPart = parts.find((p) => p.id === linkDrag.fromPartId);
+        if (!fromPart) return null;
+
+        const fromSize = sizes[fromPart.id];
+        if (!fromSize) return null;
+
+        const fromCenter = {
+          x: fromPart.x + fromSize.width / 2,
+          y: fromPart.y + fromSize.height / 2,
+        };
+
+        const isExile = fromPart.partType === "Exile";
+
+        const hoverPart = linkDrag.hoverPartId
+          ? parts.find((p) => p.id === linkDrag.hoverPartId)
+          : null;
+
+        const colors =
+          isExile && hoverPart
+            ? getPartColors(hoverPart.partType)
+            : getPartColors(fromPart.partType);
+
+        const hoverSize = hoverPart ? sizes[hoverPart.id] : null;
+
+        let x1: number;
+        let y1: number;
+        let x2: number;
+        let y2: number;
+
+        if (hoverPart && hoverSize) {
+          const hoverCenter = {
+            x: hoverPart.x + hoverSize.width / 2,
+            y: hoverPart.y + hoverSize.height / 2,
+          };
+
+          if (isExile) {
+            // hovered card protects exile: hovered card → exile
+            const from = getEdgePoint(fromCenter, hoverCenter, hoverSize.width, hoverSize.height);
+            const rawTo = getEdgePoint(hoverCenter, fromCenter, fromSize.width, fromSize.height);
+            const to = pullBackPoint(from, rawTo);
+
+            x1 = from.x;
+            y1 = from.y;
+            x2 = to.x;
+            y2 = to.y;
+          } else {
+            // source protects hovered card: source → hovered card
+            const from = getEdgePoint(hoverCenter, fromCenter, fromSize.width, fromSize.height);
+            const rawTo = getEdgePoint(fromCenter, hoverCenter, hoverSize.width, hoverSize.height);
+            const to = pullBackPoint(from, rawTo);
+
+            x1 = from.x;
+            y1 = from.y;
+            x2 = to.x;
+            y2 = to.y;
+          }
+        } else if (isExile) {
+          const rawTo = getEdgePoint(
+            { x: linkDrag.x, y: linkDrag.y },
+            fromCenter,
+            fromSize.width,
+            fromSize.height
+          );
+
+          const to = pullBackPoint({ x: linkDrag.x, y: linkDrag.y }, rawTo);
+
+          x1 = linkDrag.x;
+          y1 = linkDrag.y;
+          x2 = to.x;
+          y2 = to.y;
+        } else {
+          const from = getEdgePoint(
+            { x: linkDrag.x, y: linkDrag.y },
+            fromCenter,
+            fromSize.width,
+            fromSize.height
+          );
+
+          x1 = from.x;
+          y1 = from.y;
+          x2 = linkDrag.x;
+          y2 = linkDrag.y;
+        }
+
+        const markerType = isExile && hoverPart ? hoverPart.partType : fromPart.partType;
+
+        return (
+          <line
+            x1={x1}
+            y1={y1}
+            x2={x2}
+            y2={y2}
+            stroke={colors.arrow}
+            strokeWidth={linkDrag.hoverPartId ? 4 : 3}
+            strokeDasharray="8 6"
+            opacity={0.95}
+            markerEnd={`url(#protected-arrow-${markerType})`}
+          />
+        );
+      })()}
     </svg>
   );
 }
@@ -854,6 +1304,8 @@ function PartCard({
   isSelected,
   onAddProtector,
   onRemoveProtector,
+  isLinkHoverTarget,
+  onFocusPart,
 }: {
   part: Part;
   allParts: Part[];
@@ -867,6 +1319,8 @@ function PartCard({
   isSelected: boolean;
   onAddProtector: (protectorId: string) => void;
   onRemoveProtector: (protectorId: string) => void;
+  isLinkHoverTarget: boolean;
+  onFocusPart: (part: Part) => void;
 }) {
   const ref = useRef<HTMLElement | null>(null);
   const colors = getPartColors(part.partType);
@@ -904,9 +1358,11 @@ function PartCard({
       onPointerDown={onSelect}
       className={`w-[500px] rounded-2xl p-4 shadow-xl ${
         colors.outer
-      } ${isSelected ? "ring-2 ring-white" : ""}`}
+      } ${isSelected ? "ring-2 ring-white" : ""} ${
+        isLinkHoverTarget ? "outline outline-2 outline-dashed outline-white" : ""
+      }`}
     >
-      <div className={`overflow-hidden rounded-xl ${colors.inner}`}>
+      <div className={`overflow-visible rounded-xl ${colors.inner}`}>
         <div className="relative  py-3">
           <button
             onClick={onRemove}
@@ -949,6 +1405,7 @@ function PartCard({
             fontScale={fontScale}
             onAddProtector={onAddProtector}
             onRemoveProtector={onRemoveProtector}
+            onFocusPart={onFocusPart}
           />
         ) : (
           <ProtectedPartsSelector
@@ -957,6 +1414,7 @@ function PartCard({
             chipClassName={colors.chip}
             fontScale={fontScale}
             onChange={onUpdateProtectedParts}
+            onFocusPart={onFocusPart}
           />
         )}
 
@@ -1123,20 +1581,22 @@ function PanelField({
 }
 
 function ProtectedBySelector({
-    exile,
-    allParts,
-    chipClassName,
-    onAddProtector,
-    onRemoveProtector,
-    fontScale,
-  }: {
-    exile: Part;
-    allParts: Part[];
-    chipClassName: string;
-    onAddProtector: (protectorId: string) => void;
-    onRemoveProtector: (protectorId: string) => void;
-    fontScale: number;
-  }) {
+  exile,
+  allParts,
+  chipClassName,
+  onAddProtector,
+  onRemoveProtector,
+  onFocusPart,
+  fontScale,
+}: {
+  exile: Part;
+  allParts: Part[];
+  chipClassName: string;
+  onAddProtector: (protectorId: string) => void;
+  onRemoveProtector: (protectorId: string) => void;
+  onFocusPart: (part: Part) => void;
+  fontScale: number;
+}) {
     const [open, setOpen] = useState(false);
     const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -1179,16 +1639,28 @@ function ProtectedBySelector({
 
         <div className="flex flex-wrap items-center gap-2">
           {protectors.map((protector) => (
-            <button
+            <span
               key={protector.id}
-              type="button"
-              onClick={() => onRemoveProtector(protector.id)}
-              className={`rounded-full px-2 py-0.5 ${chipClassName}`}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 ${chipClassName}`}
               style={{ fontSize: `${0.75 * fontScale}rem` }}
-              title="Click to remove"
             >
-              {protector.title || "Untitled"} ×
-            </button>
+              <button
+                type="button"
+                onClick={() => onFocusPart(protector)}
+                className="hover:underline"
+              >
+                {protector.title || "Untitled"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => onRemoveProtector(protector.id)}
+                className="font-bold hover:opacity-70"
+                title="Remove connection"
+              >
+                ×
+              </button>
+            </span>
           ))}
 
           <div ref={containerRef} className="relative">
@@ -1243,12 +1715,14 @@ function ProtectedPartsSelector({
   chipClassName,
   onChange,
   fontScale,
+  onFocusPart,
 }: {
   part: Part;
   allParts: Part[];
   chipClassName: string;
   onChange: (protectedPartIds: string[]) => void;
   fontScale: number;
+  onFocusPart: (part: Part) => void;
 }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1299,16 +1773,28 @@ function ProtectedPartsSelector({
 
       <div className="flex flex-wrap items-center gap-2">
         {protectedParts.map((protectedPart) => (
-          <button
+          <span
             key={protectedPart.id}
-            type="button"
-            onClick={() => unprotectPart(protectedPart.id)}
-            className={`rounded-full px-2 py-0.5 ${chipClassName}`}
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 ${chipClassName}`}
             style={{ fontSize: `${0.75 * fontScale}rem` }}
-            title="Click to remove"
           >
-            {protectedPart.title || "Untitled"} ×
-          </button>
+            <button
+              type="button"
+              onClick={() => onFocusPart(protectedPart)}
+              className="hover:underline"
+            >
+              {protectedPart.title || "Untitled"}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => unprotectPart(protectedPart.id)}
+              className="font-bold hover:opacity-70"
+              title="Remove connection"
+            >
+              ×
+            </button>
+          </span>
         ))}
 
         <div ref={containerRef} className="relative">
