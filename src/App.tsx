@@ -395,6 +395,7 @@ function endCardDrag() {
   }
 
   function focusPart(part: Part) {
+    setSelectedPartId(part.id);
     const targetScale = 1.1;
     const cardSize = sizes[part.id] ?? { width: 500, height: 400 };
 
@@ -438,7 +439,7 @@ function endCardDrag() {
       }
     }
 
-    setSelectedPartId(part.id);
+    
     requestAnimationFrame(animate);
   }
 
@@ -1677,7 +1678,10 @@ function ProtectedBySelector({
             >
               <button
                 type="button"
-                onClick={() => onFocusPart(protector)}
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  onFocusPart(protector);
+                }}
                 className="hover:underline"
               >
                 {protector.title || "Untitled"}
@@ -1811,7 +1815,10 @@ function ProtectedPartsSelector({
           >
             <button
               type="button"
-              onClick={() => onFocusPart(protectedPart)}
+              onClick={(e) => {
+                e.currentTarget.blur();
+                onFocusPart(protectedPart);
+              }}
               className="hover:underline"
             >
               {protectedPart.title || "Untitled"}
