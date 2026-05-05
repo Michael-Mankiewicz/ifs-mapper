@@ -148,6 +148,7 @@ export default function App() {
   }));
 
   const parts = history.present;
+  const dragSnapshot = useRef<Part[] | null>(null);
 
   const [linkDrag, setLinkDrag] = useState<{
     fromPartId: string;
@@ -227,6 +228,27 @@ useEffect(() => {
   window.addEventListener("keydown", handleKeyDown);
   return () => window.removeEventListener("keydown", handleKeyDown);
 }, [undo, redo]);
+
+function beginCardDrag() {
+  dragSnapshot.current = parts;
+}
+
+function endCardDrag() {
+  if (!dragSnapshot.current) return;
+
+  const before = dragSnapshot.current;
+  const after = parts;
+
+  dragSnapshot.current = null;
+
+  if (JSON.stringify(before) === JSON.stringify(after)) return;
+
+  setHistory((history) => ({
+    past: [...history.past, before].slice(-100),
+    present: after,
+    future: [],
+  }));
+}
 
   function commitParts(updater: (current: Part[]) => Part[]) {
     setHistory((history) => {
@@ -832,6 +854,8 @@ useEffect(() => {
                   )
                 )
               }
+              onDragStart={beginCardDrag}
+              onDragEnd={endCardDrag}
               onDoubleClick={() => focusPart(part)}
             >
               <div
@@ -1150,6 +1174,8 @@ function DraggableCard({
   y,
   scale,
   onMove,
+  onDragStart,
+  onDragEnd,
   onDoubleClick,
   children,
 }: {
@@ -1157,6 +1183,8 @@ function DraggableCard({
   y: number;
   scale: number;
   onMove: (x: number, y: number) => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
   onDoubleClick?: () => void;
   children: React.ReactNode;
 }) {
@@ -1187,6 +1215,8 @@ function DraggableCard({
       cardX: x,
       cardY: y,
     };
+    onDragStart();
+
   }
 
   function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
@@ -1199,7 +1229,10 @@ function DraggableCard({
   }
 
   function handlePointerUp() {
-    dragStart.current = null;
+    if (dragStart.current) {
+      dragStart.current = null;
+      onDragEnd();
+    }
   }
 
   return (
