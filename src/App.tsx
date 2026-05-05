@@ -533,8 +533,6 @@ useEffect(() => {
     e.preventDefault();
     e.stopPropagation();
 
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-
     setLinkDrag({
       fromPartId: partId,
       x: (e.clientX - pan.x) / scale,
@@ -731,7 +729,7 @@ useEffect(() => {
       return;
     }
 
-    setParts(data.parts.map(normalizePart));
+    commitParts(() => data.parts.map(normalizePart));
   }
 
   return (
@@ -802,7 +800,7 @@ useEffect(() => {
           if (linkDrag) {
             finishLinkDrag(e);
           } else {
-            handleBackgroundPointerUp(e);
+            handleBackgroundPointerUp();
           }
         }}
         className="relative h-screen w-screen overflow-hidden cursor-move"
